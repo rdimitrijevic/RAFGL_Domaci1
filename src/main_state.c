@@ -7,20 +7,15 @@
 
 #include <game_constants.h>
 
-#define climbing_in_pos(x, xn) (animation_climbing || ((x < ladder_pos_x + ladder_width) && (( xn) > ladder_pos_x)))
+#define climbing_in_pos(x,xn,y) (animation_climbing || ((x < ladder_pos_x + ladder_width) && ((xn) > ladder_pos_x) && (y <= ladder_pos_y + ladder_height)))
 #define walking_in_pos(y) (!animation_climbing || ((y) < platform_pos_y) || ((y) == RASTER_HEIGHT))
-
-struct lalegl_bullet_t {
-    int center_pos_x, center_pos_y;
-    float power;
-};
 
 static rafgl_raster_t doge;
 static rafgl_raster_t upscaled_doge;
 static rafgl_raster_t raster, raster2;
 static rafgl_raster_t checker;
 static rafgl_raster_t brick_tile, wall_tile;
-
+static rafgl_raster_t smallhero, bighero;
 static rafgl_texture_t texture;
 
 static rafgl_spritesheet_t hero;
@@ -34,15 +29,29 @@ int save_file_no = 0;
 int hero_pos_x = 0;
 int hero_pos_y = 0;
 
-int ladder_pos_x = RASTER_WIDTH / 2 - 15;
-int ladder_width = 30;
-
-int platform_pos_y = 100;
+int ladder_pos_x = 0;
+int ladder_pos_y = 0;
+int ladder_height = 0;
+int ladder_width = 50;
 
 int spell_pos_x = 0;
 int spell_pos_y = 0;
 int spell_speed = 400;
 int spell_direction = -1;
+
+int platform_pos_x = 0;
+int platform_pos_y = 0;
+int platform_len = 0;
+int platform_height = 0;
+
+int tail_pos_x = 0;
+int tail_pos_y = 0;
+int tail_max_len = 150;
+
+int small_frame_width, small_frame_height;
+
+int gravity = 10;
+int hero_weight = 80;
 
 void main_state_init(GLFWwindow *window, void *args)
 {
@@ -61,6 +70,13 @@ void main_state_init(GLFWwindow *window, void *args)
 
     rafgl_spritesheet_init(&hero, "res/images/character.png", 10, 4);
 
+    rafgl_raster_init(&bighero, hero.sheet.width * 2, hero.sheet.height * 2);
+
+    smallhero = hero.sheet;
+    small_frame_height = hero.frame_height;
+    small_frame_width = hero.frame_width;
+    rafgl_raster_bilinear_upsample(&bighero, &smallhero);
+    
     hero_pos_x -= hero.frame_width / 2;
     hero_pos_y -= hero.frame_height;
 
@@ -75,22 +91,75 @@ int pressed;
 float location = 0;
 float selector = 0;
 
+int animation_big = 1;
+int animation_falling = 0;
 int animation_running = 0;
 int animation_climbing = 0;
 int animation_frame = 0;
 int direction = 0;
 
 
-int hero_speed = 100;
+int hero_speed = 150;
 
 int hover_frames = 0;
 
 void draw_platform(int x0, int y0, int lx, int ly){
     int x, y;
 
+    platform_pos_x = x0;
+    platform_pos_y = y0;
+    platform_len = lx;
+    platform_height = ly;
+
     for(y = y0; y < y0 + ly; y++){
         for(x = x0; x < x0 + lx; x++){
             pixel_at_m(raster, x, y).rgba = pixel_at_m(brick_tile, x % brick_tile.width, y % brick_tile.height).rgba;
+        }
+    }
+}
+
+void draw_ladder(int x0, int y0, int l, int factor) {
+    int x, y;
+    ladder_pos_x = x0;
+    ladder_pos_y = y0;
+    ladder_height = l;
+
+    for(y = y0; y < y0 + l; y++)
+    {
+        for(x = x0; x < raster_width; x++)
+        {
+            if(x > x0 && x < x0 + 50){
+                if (x > x0 && x < x0 + 10) {
+                    if(x < x0 + 3){
+                        pixel_at_m(raster, x, y).rgba = rafgl_RGB(55,55,55);
+                    } else if (x < x0 + 8) {
+                        pixel_at_m(raster, x, y).rgba = rafgl_RGB(255,255,255);
+                    } else {
+                        pixel_at_m(raster, x, y).rgba = rafgl_RGB(55,55,55);
+                    }
+                }
+                else if(x < x0 + 51 && x > x0 + 39){
+                    if(x < x0 + 42){
+                        pixel_at_m(raster, x, y).rgba = rafgl_RGB(55,55,55);
+                    } else if (x < x0 + 48) {
+                        pixel_at_m(raster, x, y).rgba = rafgl_RGB(255,255,255);
+                    } else {
+                        pixel_at_m(raster, x, y).rgba = rafgl_RGB(55,55,55);
+                    }
+                } 
+                if(y % factor < 8){
+                    if(x >= x0 + 10 && x <= x0 + 39){
+                        if(y % factor < 2){
+                            pixel_at_m(raster, x, y).rgba = rafgl_RGB(55,55,55);
+                        } else if(y % factor < 6) {   
+                            pixel_at_m(raster, x, y).rgba = rafgl_RGB(255,255,255);
+                        } else {
+                            pixel_at_m(raster, x, y).rgba = rafgl_RGB(55,55,55);
+                        }  
+                    }
+                }
+            }
+
         }
     }
 }
@@ -117,14 +186,24 @@ void draw_spell_animation(int h, int k, int radius){
 void main_state_update(GLFWwindow *window, float delta_time, rafgl_game_data_t *game_data, void *args)
 {
     /* hendluj input */
+    int hover_val = 5;
     animation_running = 1;
-    if(climbing_in_pos(hero_pos_x, hero_pos_x + hero.frame_width) && game_data->keys_down[RAFGL_KEY_W])
+    if((hero_pos_x + hero.frame_width < platform_pos_x || hero_pos_x > platform_pos_x + platform_len) && hero_pos_y + hero.frame_height < RASTER_HEIGHT)
+        animation_falling = 1;
+    if(animation_falling) {
+        direction = 0;
+        hero_pos_y = hero_pos_y + delta_time * gravity * hero_weight;
+        if(hero_pos_y + hero.frame_height >= RASTER_HEIGHT)
+            animation_falling = 0;
+    }
+    
+    if(!animation_falling && climbing_in_pos(hero_pos_x,hero_pos_x + hero.frame_width, hero_pos_y) && game_data->keys_down[RAFGL_KEY_W])
     {   
         animation_climbing = 1;
         hero_pos_y = hero_pos_y - hero_speed * delta_time;
         direction = 2;
     }
-    else if(climbing_in_pos(hero_pos_x, hero_pos_x + hero.frame_width) && game_data->keys_down[RAFGL_KEY_S])
+    else if(!animation_falling && climbing_in_pos(hero_pos_x,hero_pos_x + hero.frame_width, hero_pos_y) && game_data->keys_down[RAFGL_KEY_S])
     {   
         animation_climbing = 1;
         hero_pos_y = hero_pos_y + hero_speed * delta_time;
@@ -132,7 +211,7 @@ void main_state_update(GLFWwindow *window, float delta_time, rafgl_game_data_t *
     }
     else if(walking_in_pos(hero_pos_y + hero.frame_height) && game_data->keys_down[RAFGL_KEY_A])
     {
-        if(hero_pos_y + hero.frame_height < 100) hero_pos_y = 105 - hero.frame_height;
+        if(hero_pos_y + hero.frame_height < platform_pos_y) hero_pos_y = platform_pos_y - hero.frame_height;
         animation_climbing = 0;
         hero_pos_x = hero_pos_x - hero_speed * delta_time;
         direction = 1;
@@ -158,7 +237,7 @@ void main_state_update(GLFWwindow *window, float delta_time, rafgl_game_data_t *
         if(hover_frames == 0)
         {
             animation_frame = (animation_frame + 1) % 10;
-            hover_frames = 5;
+            hover_frames = hover_val;
         }
         else
         {
@@ -229,20 +308,25 @@ void main_state_update(GLFWwindow *window, float delta_time, rafgl_game_data_t *
     else
         hero_y = hero_pos_y;
 
-    for(y = 0; y < raster_height; y++)
-    {
-        for(x = 0; x < raster_width; x++)
-        {
-            if(x > ladder_pos_x && x < ladder_pos_x + 30){
-                if((y % 30 < 4) || (x > ladder_pos_x && x < ladder_pos_x + 4) || (x < ladder_pos_x + 30 && x > ladder_pos_x + 26)){
-                    pixel_at_m(raster, x, y).rgba = rafgl_RGB(55, 55, 55);
-                }
-            }
+    draw_ladder(280, 60, 460, 40);
+    
+    if(game_data->keys_pressed[RAFGL_KEY_G])
+        animation_big = !animation_big;
+    
+    if(animation_big){
+        hero.sheet = bighero;
+        hero.frame_height = small_frame_height * 2;
+        hero.frame_width = small_frame_width * 2;
+        rafgl_raster_draw_spritesheet(&raster, &hero, animation_frame, direction, hero_x, hero_y);
+    } else {
+        hero.sheet = smallhero;
+        hero.frame_height = small_frame_height;
+        hero.frame_width = small_frame_width;
+        if((hero_pos_y + hero.frame_height != RASTER_HEIGHT || hero_pos_y + hero.frame_height != platform_pos_y) && !animation_climbing)
+            animation_falling = 1;
 
-        }
+        rafgl_raster_draw_spritesheet(&raster, &hero, animation_frame, direction, hero_x, hero_y);
     }
-
-    rafgl_raster_draw_spritesheet(&raster, &hero, animation_frame, direction, hero_x, hero_y);
 
     draw_platform(200, 100, 300, 60);
 
@@ -258,7 +342,6 @@ void main_state_update(GLFWwindow *window, float delta_time, rafgl_game_data_t *
         spell_direction = 1;
         spell_pos_x = hero_pos_x - radius - 5;
         spell_pos_y = hero_pos_y + hero.frame_height / 2;
-
         draw_spell_animation(spell_pos_x, spell_pos_y, 25);
     }
 
